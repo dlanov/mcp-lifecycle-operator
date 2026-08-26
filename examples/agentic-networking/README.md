@@ -12,16 +12,13 @@ traffic.
   an `MCPServer` resource into a Deployment and a Service (`everything-mcp-server`,
   exposing port 3001). The MCP application behind that Service serves MCP
   traffic at the `/mcp` path.
-- **kube-agentic-networking** routes to that Service through an `XBackend`. The
-  `XBackend` references the Service by name/port/path, an `HTTPRoute` routes
-  traffic from a `Gateway` to that `XBackend`, and the kube-agentic-networking
-  controller programs an Envoy proxy accordingly.
+- **kube-agentic-networking** routes directly to that Service: an `HTTPRoute`
+  backendRef points at the Service by name/port, the `HTTPRoute` attaches to a
+  `Gateway`, and the kube-agentic-networking controller programs an Envoy
+  proxy accordingly.
 
-```
+```text
 MCPServer --(operator creates)--> Service (everything-mcp-server:3001/mcp)
-                                        ^
-                                        | referenced by
-                                    XBackend (everything-mcp-backend)
                                         ^
                                         | backendRefs
                                     HTTPRoute (everything-mcp-route)
@@ -30,10 +27,10 @@ MCPServer --(operator creates)--> Service (everything-mcp-server:3001/mcp)
                                     Gateway (everything-mcp-gateway)
 ```
 
-This example intentionally stops at routing. kube-agentic-networking also
-supports MCP method-level authorization via `XAccessPolicy` — see
+This example intentionally stops at routing, using a direct Service
+`backendRef` rather than kube-agentic-networking's `XBackend` resource — see
 [Optional: tool-level authorization](#optional-tool-level-authorization) below
-for a pointer, but no `XAccessPolicy` is included here.
+for why that matters if you want to add policy later.
 
 ## Prerequisites
 
@@ -84,14 +81,9 @@ kubectl get svc everything-mcp-server -n default
 
 ### kube-agentic-networking side
 
-```bash
-kubectl get xbackend everything-mcp-backend -n default -o yaml
-```
-
-Confirm `spec.mcp` matches the Service above (`serviceName: everything-mcp-server`,
-`port: 3001`, `path: /mcp`). XBackend currently does not expose a readiness
-condition. Verify that its spec references the expected Service, and use the
-Gateway and HTTPRoute status conditions below to verify routing reconciliation.
+This example routes directly to the Service, so there is no intermediate
+backend resource to inspect here — use the Gateway and HTTPRoute status
+conditions below to verify routing reconciliation.
 
 ```bash
 kubectl get gateway everything-mcp-gateway -n default -o yaml
@@ -115,12 +107,13 @@ Look at `status.parents[].conditions` for `Accepted=True` and
 This example does not include a copy/paste `curl` command for sending an actual
 MCP request through the Gateway. The current kube-agentic-networking quickstart
 puts the Gateway listener behind kube-agentic-networking's built-in SPIFFE-based
-mTLS identity system, which requires client certificates issued through the
-Kubernetes `PodCertificateRequest`/`ClusterTrustBundle` APIs. Those APIs are
-alpha and, in kube-agentic-networking's own development setup, require a
-purpose-built kind cluster with `PodCertificateRequest`, `ClusterTrustBundle`,
-and `ClusterTrustBundleProjection` feature gates enabled — not something a
-generic cluster has by default.
+mTLS identity system, which requires client certificates issued through
+Kubernetes certificate APIs (`PodCertificateRequest`, `ClusterTrustBundle`)
+that are Beta and disabled by default — not something a generic cluster has
+enabled out of the box. The exact feature gates and `--runtime-config` flags
+needed can shift between Kubernetes releases, so rather than duplicate them
+here, follow kube-agentic-networking's own versioned quickstart below, which
+sets up a cluster with the current requirements already applied.
 
 To exercise real traffic through the Gateway (including issuing an identity for
 your test client), follow kube-agentic-networking's own quickstart:
@@ -144,7 +137,9 @@ Then connect with an MCP client at `http://localhost:3001/mcp`.
 kube-agentic-networking also supports fine-grained, MCP method-level
 authorization through the `XAccessPolicy` resource — for example, allowing a
 given `ServiceAccount` to call only specific tools (`tools/call` with specific
-tool-name params) on the backend defined here. This example does not include
+tool-name params). This currently requires routing through an `XBackend`
+rather than a direct Service `backendRef`: `XAccessPolicy` can only target an
+`XBackend` or a `Gateway`, not a plain Service. This example does not include
 one. See:
 
 - The `XAccessPolicy` API:
