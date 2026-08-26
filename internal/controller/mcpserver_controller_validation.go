@@ -88,7 +88,7 @@ func (r *MCPServerReconciler) validateConfig(
 			}
 		}
 		if mcpServer.Spec.Network.DNSEgressPeer != nil {
-			if err := validateNetworkPolicyPeer(*mcpServer.Spec.Network.DNSEgressPeer, "network.dnsEgressPeer", 0); err != nil {
+			if err := validateNetworkPolicyPeerAtPath(*mcpServer.Spec.Network.DNSEgressPeer, "network.dnsEgressPeer"); err != nil {
 				return err
 			}
 		}
@@ -378,33 +378,42 @@ func validateNetworkPolicyPort(port networkingv1.NetworkPolicyPort, fieldPath st
 	return nil
 }
 
-// validateNetworkPolicyPeer validates a single NetworkPolicyPeer entry.
-// fieldPath is the JSON path prefix (e.g. "network.ingressFrom" or "network.egressTo").
+// validateNetworkPolicyPeer validates a single NetworkPolicyPeer entry from a
+// list field. fieldPath is the JSON path prefix (e.g. "network.ingressFrom" or
+// "network.egressTo"); index is appended as "[index]" to identify the entry.
 func validateNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer, fieldPath string, index int) *ValidationError {
+	return validateNetworkPolicyPeerAtPath(peer, fmt.Sprintf("%s[%d]", fieldPath, index))
+}
+
+// validateNetworkPolicyPeerAtPath validates a single NetworkPolicyPeer entry
+// against an already-fully-formed field path. Use this directly for singular
+// (non-list) peer fields, where appending an index would misleadingly imply
+// an array; use validateNetworkPolicyPeer for list fields instead.
+func validateNetworkPolicyPeerAtPath(peer networkingv1.NetworkPolicyPeer, fieldPath string) *ValidationError {
 	if peer.PodSelector == nil && peer.NamespaceSelector == nil && peer.IPBlock == nil {
 		return &ValidationError{
 			Reason:  ReasonInvalid,
-			Message: fmt.Sprintf("%s[%d]: must specify at least one of podSelector, namespaceSelector, or ipBlock", fieldPath, index),
+			Message: fmt.Sprintf("%s: must specify at least one of podSelector, namespaceSelector, or ipBlock", fieldPath),
 		}
 	}
 	if peer.IPBlock != nil {
 		if peer.PodSelector != nil || peer.NamespaceSelector != nil {
 			return &ValidationError{
 				Reason:  ReasonInvalid,
-				Message: fmt.Sprintf("%s[%d]: ipBlock cannot be combined with podSelector or namespaceSelector", fieldPath, index),
+				Message: fmt.Sprintf("%s: ipBlock cannot be combined with podSelector or namespaceSelector", fieldPath),
 			}
 		}
 		if peer.IPBlock.CIDR == "" {
 			return &ValidationError{
 				Reason:  ReasonInvalid,
-				Message: fmt.Sprintf("%s[%d]: ipBlock.cidr must not be empty", fieldPath, index),
+				Message: fmt.Sprintf("%s: ipBlock.cidr must not be empty", fieldPath),
 			}
 		}
 		_, cidrNet, err := net.ParseCIDR(peer.IPBlock.CIDR)
 		if err != nil {
 			return &ValidationError{
 				Reason:  ReasonInvalid,
-				Message: fmt.Sprintf("%s[%d]: invalid ipBlock.cidr %q: %v", fieldPath, index, peer.IPBlock.CIDR, err),
+				Message: fmt.Sprintf("%s: invalid ipBlock.cidr %q: %v", fieldPath, peer.IPBlock.CIDR, err),
 			}
 		}
 		parentOnes, parentBits := cidrNet.Mask.Size()
@@ -413,14 +422,14 @@ func validateNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer, fieldPath st
 			if err != nil {
 				return &ValidationError{
 					Reason:  ReasonInvalid,
-					Message: fmt.Sprintf("%s[%d]: invalid ipBlock.except[%d] %q: %v", fieldPath, index, j, except, err),
+					Message: fmt.Sprintf("%s: invalid ipBlock.except[%d] %q: %v", fieldPath, j, except, err),
 				}
 			}
 			exceptOnes, exceptBits := exceptNet.Mask.Size()
 			if parentBits != exceptBits || parentOnes > exceptOnes || !cidrNet.Contains(exceptNet.IP) {
 				return &ValidationError{
 					Reason:  ReasonInvalid,
-					Message: fmt.Sprintf("%s[%d]: ipBlock.except[%d] %q is not within cidr %q", fieldPath, index, j, except, peer.IPBlock.CIDR),
+					Message: fmt.Sprintf("%s: ipBlock.except[%d] %q is not within cidr %q", fieldPath, j, except, peer.IPBlock.CIDR),
 				}
 			}
 		}
