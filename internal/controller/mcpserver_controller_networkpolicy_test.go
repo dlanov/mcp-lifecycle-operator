@@ -1604,3 +1604,288 @@ var _ = Describe("MCPServer Controller - NetworkPolicy Egress Destination Restri
 		Expect(acceptedCondition.Message).To(ContainSubstring("must specify at least one of"))
 	})
 })
+
+var _ = Describe("MCPServer Controller - NetworkPolicy DNS Egress Peer", func() {
+	ctx := context.Background()
+
+	It("should preserve unrestricted DNS egress when dnsEgressPeer is omitted", func() {
+		mcpServer := newTestMCPServer("test-netpol-dns-omitted")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			EgressTo: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "10.0.0.0/8",
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		err := reconciler.reconcileNetworkPolicy(ctx, mcpServer)
+		Expect(err).NotTo(HaveOccurred())
+
+		netpol := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-omitted",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+
+		By("Verifying the DNS rule allows DNS to any destination")
+		Expect(netpol.Spec.Egress).To(HaveLen(2))
+		dnsRule := netpol.Spec.Egress[0]
+		Expect(dnsRule.To).To(BeEmpty())
+		Expect(dnsRule.Ports).To(HaveLen(2))
+	})
+
+	It("should scope DNS egress with a namespaceSelector and podSelector", func() {
+		mcpServer := newTestMCPServer("test-netpol-dns-selectors")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			EgressTo: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "10.0.0.0/8",
+					},
+				},
+			},
+			DNSEgressPeer: &networkingv1.NetworkPolicyPeer{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"k8s-app": "kube-dns"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		err := reconciler.reconcileNetworkPolicy(ctx, mcpServer)
+		Expect(err).NotTo(HaveOccurred())
+
+		netpol := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-selectors",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+
+		By("Verifying the DNS rule is scoped to exactly one peer")
+		Expect(netpol.Spec.Egress).To(HaveLen(2))
+		dnsRule := netpol.Spec.Egress[0]
+		Expect(dnsRule.To).To(HaveLen(1))
+		Expect(dnsRule.To[0].NamespaceSelector).NotTo(BeNil())
+		Expect(dnsRule.To[0].NamespaceSelector.MatchLabels).To(
+			HaveKeyWithValue("kubernetes.io/metadata.name", "kube-system"))
+		Expect(dnsRule.To[0].PodSelector).NotTo(BeNil())
+		Expect(dnsRule.To[0].PodSelector.MatchLabels).To(HaveKeyWithValue("k8s-app", "kube-dns"))
+		Expect(dnsRule.Ports).To(HaveLen(2))
+	})
+
+	It("should scope DNS egress with an ipBlock", func() {
+		port443 := intstr.FromInt32(443)
+		protocolTCP := corev1.ProtocolTCP
+		mcpServer := newTestMCPServer("test-netpol-dns-ipblock")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			EgressPorts: []networkingv1.NetworkPolicyPort{
+				{Port: &port443, Protocol: &protocolTCP},
+			},
+			DNSEgressPeer: &networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR: "10.0.0.53/32",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		err := reconciler.reconcileNetworkPolicy(ctx, mcpServer)
+		Expect(err).NotTo(HaveOccurred())
+
+		netpol := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-ipblock",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+
+		By("Verifying the DNS rule is scoped to the ipBlock")
+		Expect(netpol.Spec.Egress).To(HaveLen(2))
+		dnsRule := netpol.Spec.Egress[0]
+		Expect(dnsRule.To).To(HaveLen(1))
+		Expect(dnsRule.To[0].IPBlock).NotTo(BeNil())
+		Expect(dnsRule.To[0].IPBlock.CIDR).To(Equal("10.0.0.53/32"))
+	})
+
+	It("should update the DNS rule when dnsEgressPeer changes or is removed", func() {
+		mcpServer := newTestMCPServer("test-netpol-dns-update")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			EgressTo: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "10.0.0.0/8",
+					},
+				},
+			},
+			DNSEgressPeer: &networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR: "10.0.0.53/32",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		By("Initial reconcile with dnsEgressPeer set")
+		Expect(reconciler.reconcileNetworkPolicy(ctx, mcpServer)).To(Succeed())
+
+		netpol := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-update",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+		Expect(netpol.Spec.Egress[0].To).To(HaveLen(1))
+		Expect(netpol.Spec.Egress[0].To[0].IPBlock.CIDR).To(Equal("10.0.0.53/32"))
+
+		By("Changing dnsEgressPeer to a different ipBlock")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(mcpServer), mcpServer)).To(Succeed())
+		mcpServer.Spec.Network.DNSEgressPeer = &networkingv1.NetworkPolicyPeer{
+			IPBlock: &networkingv1.IPBlock{
+				CIDR: "192.168.0.53/32",
+			},
+		}
+		Expect(k8sClient.Update(ctx, mcpServer)).To(Succeed())
+		Expect(reconciler.reconcileNetworkPolicy(ctx, mcpServer)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-update",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+		Expect(netpol.Spec.Egress[0].To).To(HaveLen(1))
+		Expect(netpol.Spec.Egress[0].To[0].IPBlock.CIDR).To(Equal("192.168.0.53/32"))
+
+		By("Removing dnsEgressPeer")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(mcpServer), mcpServer)).To(Succeed())
+		mcpServer.Spec.Network.DNSEgressPeer = nil
+		Expect(k8sClient.Update(ctx, mcpServer)).To(Succeed())
+		Expect(reconciler.reconcileNetworkPolicy(ctx, mcpServer)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-update",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+		Expect(netpol.Spec.Egress[0].To).To(BeEmpty())
+	})
+
+	It("should reject an invalid or empty dnsEgressPeer during validation", func() {
+		mcpServer := newTestMCPServer("test-netpol-dns-empty-peer")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			EgressTo: []networkingv1.NetworkPolicyPeer{
+				{
+					IPBlock: &networkingv1.IPBlock{
+						CIDR: "10.0.0.0/8",
+					},
+				},
+			},
+			DNSEgressPeer: &networkingv1.NetworkPolicyPeer{},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      "test-netpol-dns-empty-peer",
+				Namespace: "default",
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Verifying Accepted condition is False with Invalid reason")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(mcpServer), mcpServer)).To(Succeed())
+		acceptedCondition := meta.FindStatusCondition(mcpServer.Status.Conditions, "Accepted")
+		Expect(acceptedCondition).NotTo(BeNil())
+		Expect(acceptedCondition.Status).To(Equal(metav1.ConditionFalse))
+		Expect(acceptedCondition.Reason).To(Equal("Invalid"))
+		Expect(acceptedCondition.Message).To(ContainSubstring("network.dnsEgressPeer[0]"))
+		Expect(acceptedCondition.Message).To(ContainSubstring("must specify at least one of"))
+
+		By("Verifying no NetworkPolicy was created")
+		netpolList := &networkingv1.NetworkPolicyList{}
+		Expect(k8sClient.List(ctx, netpolList, client.InNamespace("default"),
+			client.MatchingLabels{"mcp-server": "test-netpol-dns-empty-peer"})).To(Succeed())
+		Expect(netpolList.Items).To(BeEmpty())
+	})
+
+	It("should leave egress as a single allow-all rule when dnsEgressPeer is set alone", func() {
+		mcpServer := newTestMCPServer("test-netpol-dns-alone")
+		mcpServer.Spec.Network = &mcpv1alpha1.NetworkConfig{
+			DNSEgressPeer: &networkingv1.NetworkPolicyPeer{
+				IPBlock: &networkingv1.IPBlock{
+					CIDR: "10.0.0.53/32",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, mcpServer)).To(Succeed())
+		defer func() {
+			_ = k8sClient.Delete(ctx, mcpServer)
+		}()
+
+		reconciler := &MCPServerReconciler{
+			Client:    k8sClient,
+			Scheme:    k8sClient.Scheme(),
+			APIReader: k8sClient,
+		}
+
+		err := reconciler.reconcileNetworkPolicy(ctx, mcpServer)
+		Expect(err).NotTo(HaveOccurred())
+
+		netpol := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "test-netpol-dns-alone",
+			Namespace: "default",
+		}, netpol)).To(Succeed())
+
+		By("Verifying dnsEgressPeer alone does not activate egress restrictions")
+		Expect(netpol.Spec.Egress).To(HaveLen(1))
+		Expect(netpol.Spec.Egress[0].To).To(BeEmpty())
+		Expect(netpol.Spec.Egress[0].Ports).To(BeEmpty())
+	})
+})

@@ -19,3 +19,17 @@ spec:
     egressPorts:
       - port: 443
         protocol: TCP
+    # dnsEgressPeer scopes the automatically-added DNS (port 53) egress
+    # rule to the cluster's DNS provider instead of allowing DNS lookups
+    # to any destination. Only takes effect because egressTo/egressPorts
+    # above already activate egress restrictions.
+    # The selectors below target CoreDNS on vanilla Kubernetes; adjust
+    # them for your cluster's DNS implementation (for example, OpenShift
+    # uses a different namespace and labels).
+    dnsEgressPeer:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns

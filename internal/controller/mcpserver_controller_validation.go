@@ -87,6 +87,11 @@ func (r *MCPServerReconciler) validateConfig(
 				return err
 			}
 		}
+		if mcpServer.Spec.Network.DNSEgressPeer != nil {
+			if err := validateNetworkPolicyPeer(*mcpServer.Spec.Network.DNSEgressPeer, "network.dnsEgressPeer", 0); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Validate TLS configuration

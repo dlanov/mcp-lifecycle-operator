@@ -175,6 +175,9 @@ func buildEgressRules(mcpServer *mcpv1alpha1.MCPServer) []networkingv1.NetworkPo
 			{Port: &dnsPort, Protocol: &tcp},
 		},
 	}
+	if mcpServer.Spec.Network.DNSEgressPeer != nil {
+		dnsRule.To = []networkingv1.NetworkPolicyPeer{*mcpServer.Spec.Network.DNSEgressPeer.DeepCopy()}
+	}
 
 	userRule := networkingv1.NetworkPolicyEgressRule{}
 	if hasEgressTo {
